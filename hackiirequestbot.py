@@ -209,8 +209,22 @@ async def send_sequence_messages_instant(bot, chat_id):
 
 async def start(update, context):
     add_user(update.effective_user.id)
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ APPROVE ME", callback_data="approve_me")]
+    ])
+
+    await update.message.reply_text(
+        "VIP ME APPROVAL KLIYE NEECHE BUTTON PE TAP KARE 👇👇👇👇",
+        reply_markup=keyboard
+    )
+
     if update.effective_user.id == ADMIN_ID:
-        await update.message.reply_text("👑 **JANEMAN BOT V20** 👑", reply_markup=get_main_menu(), parse_mode="Markdown")
+        await update.message.reply_text(
+            "👑 **JANEMAN BOT V20** 👑",
+            reply_markup=get_main_menu(),
+            parse_mode="Markdown"
+        )
 
 async def handle_callbacks(update, context):
     query = update.callback_query
@@ -233,6 +247,9 @@ async def handle_callbacks(update, context):
         await query.edit_message_text("📣 **Post bhejein broadcast ke liye:**")
     elif query.data == "test_msg":
         await send_sequence_messages_instant(context.bot, ADMIN_ID)
+
+    elif query.data == "approve_me":
+        await query.answer("✅ Approval request received!", show_alert=True)
 
 async def content_handler(update, context):
     if update.effective_user.id != ADMIN_ID: return
