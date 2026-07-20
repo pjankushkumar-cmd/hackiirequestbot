@@ -5,7 +5,9 @@ import os
 import sqlite3
 import threading
 import asyncio
-import urllib.request  # Self-ping engine ke liye mandatory hai
+import urllib.request
+import base64
+import requests
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ChatJoinRequestHandler, ContextTypes, MessageHandler, filters
@@ -17,16 +19,20 @@ logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s
 BOT_TOKEN = "8831391243:AAFNUMEngpQns6MQk3Hf9WZb9uBDuk_3mRw" 
 ADMIN_ID = 8767998937 
 # ===================================================================
+# =================== GITHUB CONFIG ===================
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
+GITHUB_OWNER = os.getenv("GITHUB_OWNER")
+GITHUB_REPO = os.getenv("GITHUB_REPO")
+GITHUB_FILE = os.getenv("GITHUB_FILE", "members.json")
+# =====================================================
 
 if BOT_TOKEN == "YOUR_BOT_TOKEN_HERE" or ADMIN_ID == 123456789:
     print("\n❌ ERROR: Pehle apna BOT_TOKEN aur ADMIN_ID code me sahi se badlo!\n")
     sys.exit(1)
 
-# --- GLOBAL LIVE MEMORY CACHE FOR ULTRA SPEED ---
 CACHED_MESSAGES = [] 
-# ------------------------------------------------
 
-# --- RENDER PORT BINDING & ANTI-SLEEP CODES ---
+# --- WEB SERVER & ANTI-SLEEP ---
 class HealthCheckServer(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -40,33 +46,20 @@ def run_health_server():
     logging.info(f"🟢 Web Server started successfully on port {port}")
     server.serve_forever()
 
-# 🔥 ULTRA HYPER-ACTIVE ANTI-SLEEP ENGINE (15 SECONDS LOOP)
 def self_ping_loop():
-    """Yeh loop har 15 second me Render URL ko ping karega taaki server hamesha super-awake rahe"""
     render_url = os.environ.get("RENDER_EXTERNAL_URL")
-    
-    if not render_url:
-        render_url = f"http://localhost:{os.environ.get('PORT', 8080)}"
-        
-    logging.info(f"🚀 15-Sec Hyper-Active Anti-Sleep Engine activated for URL: {render_url}")
-    
+    if not render_url: render_url = f"http://localhost:{os.environ.get('PORT', 8080)}"
     while True:
         try:
             import time
-            time.sleep(15) # Aapke kehne par 15 seconds par set kar diya hai!
+            time.sleep(15)
             if "localhost" not in render_url:
-                # Custom User-Agent taaki Render ise spam/bot ping samajh kar block na kare
-                req = urllib.request.Request(
-                    render_url, 
-                    headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) VIP-Hyper-Bot'}
-                )
+                req = urllib.request.Request(render_url, headers={'User-Agent': 'VIP-Hyper-Bot'})
                 urllib.request.urlopen(req, timeout=5)
-                logging.info("⚡ Live Ping Sent (15s Interval)! Bot is forcefully kept awake.")
         except Exception as e:
-            # Agar locally chal raha hai toh fail hoga, Render par perfect chalega
             logging.error(f"⚠️ Ping Note: {e}")
 
-# SQLite Database Initialization
+# --- DB, GITHUB & SYNC HELPERS ---
 def init_db():
     global CACHED_MESSAGES
     conn = sqlite3.connect('janeman_pro.db')
@@ -74,24 +67,65 @@ def init_db():
     cursor.execute('''CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS stats (key TEXT PRIMARY KEY, count INTEGER)''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY)''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS messages_list (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT, 
-                        chat_id TEXT, 
-                        msg_id TEXT
-                    )''')
-
+    cursor.execute('''CREATE TABLE IF NOT EXISTS messages_list (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id TEXT, msg_id TEXT)''')
     cursor.execute("INSERT OR IGNORE INTO settings VALUES ('auto_accept', 'OFF')")
     cursor.execute("INSERT OR IGNORE INTO stats VALUES ('total_requests', 0)")
     cursor.execute("INSERT OR IGNORE INTO stats VALUES ('accepted', 0)")
     conn.commit()
-    
-    # Load messages directly into RAM on startup
     cursor.execute("SELECT chat_id, msg_id FROM messages_list ORDER BY id ASC")
     CACHED_MESSAGES = cursor.fetchall()
-    
     conn.close()
 
-# Fast Database Helpers
+def sync_users_to_github():
+    if not all([GITHUB_TOKEN, GITHUB_OWNER, GITHUB_REPO]): return
+    try:
+        users = get_all_users()
+        content = json.dumps(users)
+        content_encoded = base64.b64encode(content.encode()).decode()
+        url = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/contents/{GITHUB_FILE}"
+        headers = {"Authorization": f"Bearer {GITHUB_TOKEN}"}
+        r = requests.get(url, headers=headers)
+        sha = r.json().get("sha") if r.status_code == 200 else None
+        data = {"message": "Update users list", "content": content_encoded, "sha": sha}
+        
+        response = requests.put(url, headers=headers, json=data)
+        if response.status_code not in (200, 201):
+            logging.error(f"GitHub Sync Failed: {response.text}")
+            
+    except Exception as e: logging.error(f"GitHub Sync Error: {e}")
+
+def load_users_from_github():
+    if not all([GITHUB_TOKEN, GITHUB_OWNER, GITHUB_REPO]): return
+    try:
+        url = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/contents/{GITHUB_FILE}"
+        headers = {"Authorization": f"Bearer {GITHUB_TOKEN}", "Accept": "application/vnd.github+json"}
+        r = requests.get(url, headers=headers)
+        if r.status_code != 200: return
+        users = json.loads(base64.b64decode(r.json()["content"]).decode())
+        conn = sqlite3.connect("janeman_pro.db")
+        cursor = conn.cursor()
+        for uid in users: cursor.execute("INSERT OR IGNORE INTO users VALUES (?)", (uid,))
+        conn.commit()
+        conn.close()
+    except Exception as e: logging.error(f"GitHub Load Error: {e}")
+
+def add_user(user_id):
+    conn = sqlite3.connect("janeman_pro.db")
+    cursor = conn.cursor()
+    cursor.execute("INSERT OR IGNORE INTO users VALUES (?)", (user_id,))
+    conn.commit()
+    conn.close()
+    sync_users_to_github()
+
+def get_all_users():
+    conn = sqlite3.connect('janeman_pro.db')
+    cursor = conn.cursor()
+    cursor.execute("SELECT user_id FROM users")
+    users = [row[0] for row in cursor.fetchall()]
+    conn.close()
+    return users
+
+# --- DB HELPERS ---
 def get_setting(key):
     conn = sqlite3.connect('janeman_pro.db')
     cursor = conn.cursor()
@@ -113,7 +147,6 @@ def add_saved_message(chat_id, msg_id):
     cursor = conn.cursor()
     cursor.execute("INSERT INTO messages_list (chat_id, msg_id) VALUES (?, ?)", (str(chat_id), str(msg_id)))
     conn.commit()
-    # Instantly sync cache
     cursor.execute("SELECT chat_id, msg_id FROM messages_list ORDER BY id ASC")
     CACHED_MESSAGES = cursor.fetchall()
     conn.close()
@@ -126,21 +159,6 @@ def clear_saved_messages():
     conn.commit()
     CACHED_MESSAGES = []
     conn.close()
-
-def add_user(user_id):
-    conn = sqlite3.connect('janeman_pro.db')
-    cursor = conn.cursor()
-    cursor.execute("INSERT OR IGNORE INTO users VALUES (?)", (user_id,))
-    conn.commit()
-    conn.close()
-
-def get_all_users():
-    conn = sqlite3.connect('janeman_pro.db')
-    cursor = conn.cursor()
-    cursor.execute("SELECT user_id FROM users")
-    users = [row[0] for row in cursor.fetchall()]
-    conn.close()
-    return users
 
 def get_stats():
     conn = sqlite3.connect('janeman_pro.db')
@@ -157,7 +175,7 @@ def update_stat(key, amount=1):
     conn.commit()
     conn.close()
 
-# Menu UI Generation
+# --- UI & HANDLERS ---
 def get_main_menu():
     stats = get_stats()
     total_users = len(get_all_users())
@@ -176,143 +194,86 @@ def get_welcome_menu():
     total_saved = len(CACHED_MESSAGES)
     keyboard = [
         [InlineKeyboardButton(f"Status: {status_emoji}", callback_data="toggle_auto")],
-        [InlineKeyboardButton(f"➕ Add Message / Voice / Media", callback_data="edit_welcome")],
+        [InlineKeyboardButton(f"➕ Add Message / Media", callback_data="edit_welcome")],
         [InlineKeyboardButton(f"🗑️ Clear All Saved ({total_saved})", callback_data="clear_welcome")],
         [InlineKeyboardButton("👁️ Test Sequence Message", callback_data="test_msg")],
         [InlineKeyboardButton("⬅️ Back to Main Menu", callback_data="refresh_main")]
     ]
     return InlineKeyboardMarkup(keyboard)
 
-# ⚡ LIVE RAM DELIVERY (0ms LAG) ⚡
 async def send_sequence_messages_instant(bot, chat_id):
-    if not CACHED_MESSAGES:
-        return
-
+    if not CACHED_MESSAGES: return
     for row in CACHED_MESSAGES:
-        s_chat_id, s_msg_id = row
-        try:
-            await bot.copy_message(chat_id=chat_id, from_chat_id=int(s_chat_id), message_id=int(s_msg_id))
-        except Exception as e:
-            logging.error(f"⚠️ Fast Delivery skipped to {chat_id}: {e}")
+        try: await bot.copy_message(chat_id=chat_id, from_chat_id=int(row[0]), message_id=int(row[1]))
+        except Exception as e: logging.error(f"Fast Delivery skipped: {e}")
 
-# Command Handlers
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.effective_user:
-        return
+async def start(update, context):
     add_user(update.effective_user.id)
-    if update.effective_user.id != ADMIN_ID:
-        return
-        
-    await update.message.reply_text("👑 **JANEMAN BOT SUPPORT V20 (RAM Boost Mode)** 👑\n\nAapka bot ab zero database lag par set hai. Request aate hi microsecond me deliver karega:", reply_markup=get_main_menu(), parse_mode="Markdown")
+    if update.effective_user.id == ADMIN_ID:
+        await update.message.reply_text("👑 **JANEMAN BOT V20** 👑", reply_markup=get_main_menu(), parse_mode="Markdown")
 
-async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_callbacks(update, context):
     query = update.callback_query
-    if not query or query.from_user.id != ADMIN_ID:
-        await query.answer("Access Denied!", show_alert=True)
-        return
+    if query.from_user.id != ADMIN_ID: return
     await query.answer()
-
-    if query.data == "refresh_main":
-        await query.edit_message_text("👑 **JANEMAN BOT SUPPORT V20** 👑\n\nAapka panel ab memory cache par hyper-fast chal raha hai:", reply_markup=get_main_menu(), parse_mode="Markdown")
-
-    elif query.data == "welcome_settings":
-        auto_status = get_setting("auto_accept")
-        total_saved = len(CACHED_MESSAGES)
-        text = f"⚙️ **Welcome Sequence Settings**\n\n🔄 Auto Accept Status: **{auto_status}**\n📦 RAM-Cached Messages: **{total_saved}**\n\n⚡ *Engine Status: Hyperactive (0ms Delay)*"
-        await query.edit_message_text(text, reply_markup=get_welcome_menu(), parse_mode="Markdown")
-
+    if query.data == "refresh_main": await query.edit_message_text("👑 **JANEMAN BOT V20** 👑", reply_markup=get_main_menu(), parse_mode="Markdown")
+    elif query.data == "welcome_settings": await query.edit_message_text("⚙️ **Settings**", reply_markup=get_welcome_menu(), parse_mode="Markdown")
     elif query.data == "toggle_auto":
-        current = get_setting("auto_accept")
-        new_status = "ON" if current == "OFF" else "OFF"
+        new_status = "OFF" if get_setting("auto_accept") == "ON" else "ON"
         set_setting("auto_accept", new_status)
-        total_saved = len(CACHED_MESSAGES)
-        text = f"⚙️ **Welcome Sequence Settings**\n\n🔄 Auto Accept Status: **{new_status}**\n📦 RAM-Cached Messages: **{total_saved}**"
-        await query.edit_message_text(text, reply_markup=get_welcome_menu(), parse_mode="Markdown")
-
+        await query.edit_message_text(f"⚙️ Status: {new_status}", reply_markup=get_welcome_menu(), parse_mode="Markdown")
     elif query.data == "edit_welcome":
         context.user_data['state'] = 'waiting_welcome'
-        await query.edit_message_text("📝 **Apna Welcome Message/Voice/Media send karein:**\n\nEk ek karke bhejein. Finish karne par dubara `/start` type karein.")
-
+        await query.edit_message_text("📝 **Media bhejein...**")
     elif query.data == "clear_welcome":
         clear_saved_messages()
-        auto_status = get_setting("auto_accept")
-        text = f"🗑️ **Saare saved messages cache se saaf ho gaye!**\n\n🔄 Auto Accept Status: **{auto_status}**\n📦 RAM-Cached Messages: **0**"
-        await query.edit_message_text(text, reply_markup=get_welcome_menu(), parse_mode="Markdown")
-
+        await query.edit_message_text("🗑️ Cleared!", reply_markup=get_welcome_menu(), parse_mode="Markdown")
     elif query.data == "broadcast_tool":
         context.user_data['state'] = 'waiting_broadcast'
-        await query.edit_message_text("📣 **Broadcast Post bhejein:**\n\nJo post sabhi users ko bhejni hai wo send karein. Cancel ke liye /start likhein.")
-
+        await query.edit_message_text("📣 **Post bhejein broadcast ke liye:**")
     elif query.data == "test_msg":
-        await query.message.reply_text("⚡ *RAM sequence message trigger ho raha hai...*")
         await send_sequence_messages_instant(context.bot, ADMIN_ID)
 
-async def content_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.effective_user or update.effective_user.id != ADMIN_ID:
-        return
+async def content_handler(update, context):
+    if update.effective_user.id != ADMIN_ID: return
     state = context.user_data.get('state')
-    if not state:
-        return
-
     if state == 'waiting_welcome':
         add_saved_message(update.message.chat_id, update.message.message_id)
-        total_saved = len(CACHED_MESSAGES)
-        await update.message.reply_text(f"✅ Cache me update hua! (Total In-Memory: {total_saved})\nAur bhejna hai toh send karte rahiye, ya `/start` likhiye.")
-
+        await update.message.reply_text("✅ Cached!")
     elif state == 'waiting_broadcast':
         context.user_data['state'] = None
         users = get_all_users()
-        await update.message.reply_text(f"🚀 Broadcast Shuru! Total Users: {len(users)}")
-        s, f = 0, 0
         for u_id in users:
-            try:
-                await context.bot.copy_message(chat_id=u_id, from_chat_id=update.message.chat_id, message_id=update.message.message_id)
-                s += 1
-            except Exception:
-                f += 1
-        await update.message.reply_text(f"🏁 Broadcast Complete!\n\n✅ Pass: {s}\n❌ Fail: {f}")
+            try: await context.bot.copy_message(chat_id=u_id, from_chat_id=update.message.chat_id, message_id=update.message.message_id)
+            except: pass
+        await update.message.reply_text("🏁 Broadcast Done!")
 
-# 🔥 REAL-TIME LIGHTNING REFLEX DELIVERY 🔥
-async def hyper_delivery_worker(bot, chat_id, user_id, auto_mode):
-    await send_sequence_messages_instant(bot, user_id)
-    if auto_mode == "ON":
-        try:
-            await bot.approve_chat_join_request(chat_id=chat_id, user_id=user_id)
-            update_stat('accepted', 1)
-        except Exception:
-            pass
-
-async def join_request_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def join_request_handler(update, context):
     request = update.chat_join_request
     if not request:
         return
-
-    user_id = request.from_user.id
-    chat_id = request.chat.id
-    auto_mode = get_setting("auto_accept")
-
+        
     update_stat('total_requests', 1)
-    add_user(user_id)
-
-    asyncio.create_task(hyper_delivery_worker(context.bot, chat_id, user_id, auto_mode))
+    add_user(request.from_user.id)
+    await send_sequence_messages_instant(context.bot, request.from_user.id)
+    if get_setting("auto_accept") == "ON":
+        await context.bot.approve_chat_join_request(chat_id=request.chat.id, user_id=request.from_user.id)
+        update_stat('accepted', 1)
 
 def main():
     init_db()
+    load_users_from_github()
     
-    # 1. Port binding for Render stability
     threading.Thread(target=run_health_server, daemon=True).start()
-    
-    # 2. Render Anti-Sleep Engine Activation (15-Seconds Force Awake)
     threading.Thread(target=self_ping_loop, daemon=True).start()
     
     app = Application.builder().token(BOT_TOKEN).build()
-    
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(handle_callbacks))
     app.add_handler(ChatJoinRequestHandler(join_request_handler))
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, content_handler))
     
-    print("\n🟢 VIP HYPER-SPEED 24/7 ENGINE ONLINE (15s FORCE PING)! 🟢\n")
+    print("\n🟢 VIP HYPER-SPEED 24/7 ENGINE ONLINE 🟢\n")
     app.run_polling()
 
 if __name__ == '__main__':
