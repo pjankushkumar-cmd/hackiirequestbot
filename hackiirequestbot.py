@@ -17,7 +17,7 @@ logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s
 
 # =================== [ CRITICAL CONFIGURATION ] ===================
 BOT_TOKEN = "8831391243:AAFNUMEngpQns6MQk3Hf9WZb9uBDuk_3mRw" 
-ADMIN_ID = 7056647164 
+ADMIN_ID = 8767998937 
 # ===================================================================
 # =================== GITHUB CONFIG ===================
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
